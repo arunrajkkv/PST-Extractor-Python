@@ -5,6 +5,7 @@ from flask_cors import CORS
 from aspose.email.storage.pst import PersonalStorage
 import struct
 from flask import request
+import json
 
 app = flask.Flask(__name__)
 app.config["DEBUG"] = True
@@ -49,12 +50,11 @@ def read_pst_header(file_path):
 
 @app.route('/getExtractedData', methods=['GET'])
 def getExtractedData():
-    with PersonalStorage.from_file("D:\others\pst files\source.pst") as pst:
+    file_path = request.args.get('file')
+    with PersonalStorage.from_file(file_path) as pst:
         folder_info_collection = pst.root_folder.get_sub_folders()
         result = []
-        file_path = "D:\others\pst files\source.pst"
         header_info = read_pst_header(file_path)
-        print(header_info)
         for folder_info in folder_info_collection:
             folder_data = {
                 'folder_name': folder_info.display_name,
@@ -70,6 +70,20 @@ def getExtractedData():
                 messages = folder.get_contents(0, folder_info.content_count)
                 for message_info in messages:
                     mapi = pst.extract_message(message_info)
+                    # for prop in dir(mapi):
+                    #     print(f"{prop}: {getattr(mapi, prop)}")
+                    received_spf = mapi.headers.get('Received-SPF')
+                    received = mapi.headers.get('Received')
+                    if received_spf is not None:
+                        sender_email_server = mapi.headers.get(received_spf)
+                    else:
+                        sender_email_server = None
+
+                    if received is not None:
+                        way_to_recipient_server = mapi.headers.get(received)
+                    else:
+                        way_to_recipient_server = None
+
                     message_data = {
                         'subject': mapi.subject,
                         'sender_name': mapi.sender_name,
@@ -78,7 +92,13 @@ def getExtractedData():
                         'cc': mapi.display_cc,
                         'bcc': mapi.display_bcc,
                         'delivery_time': str(mapi.delivery_time),
-                        'body': mapi.body
+                        'body': mapi.body_html,
+                        'client_submit_time': mapi.client_submit_time,
+                        'sender_address_type': mapi.sender_address_type,
+                        'sender_smtp_address': mapi.sender_smtp_address,
+                        'conversation_topic': mapi.conversation_topic,
+                        'sender_email_server': sender_email_server,
+                        'way_to_recipient_server': way_to_recipient_server
                     }
                     folder_data['messages'].append(message_data)
                     if mapi.message_class.startswith('IPM.Contact'):
@@ -88,12 +108,11 @@ def getExtractedData():
                             'phone': '',  # Add phone number if available
                         }
                         folder_data['contacts'].append(contact_data)
-
                     for attachment in mapi.attachments:
                         if hasattr(attachment, 'name'):
                             attachment_data = {
                                 'name': attachment.name,
-                                'size': attachment.size,
+                                'size': attachment.size
                             }
                             folder_data['attachments'].append(attachment_data)
             result.append(folder_data)
