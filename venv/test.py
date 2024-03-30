@@ -59,6 +59,15 @@ def checkForProperEmailDelivery(mapi):
     else:
         return 'Unsuccessful'
 
+# def extractImagesFromHtml(html_content):
+#     images = []
+#     soup = BeautifulSoup(html_content, 'html.parser')
+#     img_tags = soup.find_all('img')
+#     for img_tag in img_tags:
+#         src = img_tag.get('src')
+#         if src:
+#             images.append(src)
+#     return images
 def extractImagesFromHtml(html_content):
     images = []
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -66,7 +75,16 @@ def extractImagesFromHtml(html_content):
     for img_tag in img_tags:
         src = img_tag.get('src')
         if src:
-            images.append(src)
+            # If the src is a URL, you can directly add it to the images list
+            if src.startswith('http') or src.startswith('https'):
+                images.append(src)
+            # If the src is a base64 encoded image, you can extract and decode it
+            elif src.startswith('data:image'):
+                # Extract the base64 encoded image data
+                src_parts = src.split(',')
+                if len(src_parts) > 1:
+                    image_data = src_parts[1]
+                    images.append(image_data)  # Add the decoded image data to the images list
     return images
 
 
