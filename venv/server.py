@@ -94,6 +94,9 @@ def getExtractedData():
                 for message_info in messages:
                     mapi = pst.extract_message(message_info)
                     print(mapi.headers)
+                    arc_seal = mapi.headers.get('ARC-Seal')
+                    arc_message_signature = mapi.headers.get('ARC-Message-Signature')
+                    x_google_smtp_source = mapi.headers.get('X-Google-Smtp-Source')
                     received_spf = mapi.headers.get('Received-SPF')
                     received = mapi.headers.get('Received')
                     message_id = mapi.headers.get('Message-Id')
@@ -140,7 +143,10 @@ def getExtractedData():
                         'images': extractImagesFromHtml(mapi.body_html),
                         'sender_ip_address': sender_ip_address,
                         'receiver_ip_address': receiver_ip_address,
-                        'authenticated': authenticated
+                        'authenticated': authenticated,
+                        'arc_seal': arc_seal,
+                        'arc_message_signature': arc_message_signature,
+                        'x_google_smtp_source': x_google_smtp_source
                     }
                     folderData['messages'].append(message_data)
                     if mapi.message_class.startswith('IPM.Contact'):
