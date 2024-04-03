@@ -1,4 +1,5 @@
-from datetime import datetime 
+from datetime import datetime
+import re 
 import flask
 from flask import jsonify
 from flask_cors import CORS
@@ -15,21 +16,19 @@ UPLOAD_FOLDER = 'D:/others/pst files/'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 def decodeTime(time_bytes):
-    timeValues = struct.unpack('<4I', time_bytes) # Decode time bytes to integer values
-    # Convert to human-readable timestamp
+    timeValues = struct.unpack('<4I', time_bytes)
     timestamp = (timeValues[0] * 60 * 60 * 24 * 365) + (timeValues[1] * 60 * 60 * 24 * 30) + (timeValues[2] * 60 * 60 * 24) + (timeValues[3])
-    return datetime.fromtimestamp(timestamp) # Convert timestamp to datetime object
+    return datetime.fromtimestamp(timestamp)
 
 def getBasicDataFromPstHeader(file_path):
     with open(file_path, 'rb') as f:
-        header_data = f.read(56)  # Read the first 40 bytes of the file (PST header size)
+        header_data = f.read(56)
         if len(header_data) < 56:
             raise ValueError("Invalid PST file: Header size is less than expected")
-        # Parse the header fields
         signature, version, file_format, root_folder_id, creation_time_bytes, modification_time_bytes = struct.unpack('<4sHH16s16s16s', header_data)
-        signature = signature.decode('ascii') # Convert binary data to human-readable format
-        creation_time = creation_time_bytes.rstrip(b'\x00').decode('utf-8', errors='ignore')  # Remove null bytes and decode using 'utf-8'
-        modification_time = modification_time_bytes.rstrip(b'\x00').decode('utf-8', errors='ignore')  # Remove null bytes and decode using 'utf-8'
+        signature = signature.decode('ascii')
+        creation_time = creation_time_bytes.rstrip(b'\x00').decode('utf-8', errors='ignore')
+        modification_time = modification_time_bytes.rstrip(b'\x00').decode('utf-8', errors='ignore')
 
         return {
             'signature': signature,
@@ -69,6 +68,56 @@ def extractImagesFromHtml(html_content):
             images.append(src)
     return images
 
+def extractMessagePreview(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    preview_text = soup.get_text()[:50]
+    return preview_text
+
+def extractLabelsFromHeaders(headers):
+    label_patterns = [
+        r"X-Label: (.*?)\r?\n",  # Example: X-Label: Important
+        r"Keywords: (.*?)\r?\n",  # Example: Keywords: Work, Personal
+        # Add more patterns as needed
+    ]
+    labels = []
+    for pattern in label_patterns:
+        match = re.search(pattern, headers, re.IGNORECASE)
+        if match:
+            labels.extend(match.group(1).split(','))
+    return labels
+
+def extractLabelsFromBody(body_html):
+    label_pattern = r'<span class="label">(.*?)</span>'
+    labels = re.findall(label_pattern, body_html)
+    return labels
+
+def isReply(headers):
+    # Define patterns for reply headers
+    reply_patterns = [
+        r"In-Reply-To:.*\n",  # Example: In-Reply-To: <unique_id>
+        r"References:.*\n",    # Example: References: <unique_id>
+        r"X-MS-TNEF-Correlator:.*\n"  # Example: X-MS-TNEF-Correlator: <unique_id>
+        # Add more patterns as needed
+    ]
+    
+    for pattern in reply_patterns:
+        if re.search(pattern, headers):
+            return True
+    return False
+
+def isForward(headers):
+    # Define patterns for forward headers
+    forward_patterns = [
+        r"X-Forwarded-Message-Id:.*\n",  # Example: X-Forwarded-Message-Id: <unique_id>
+        r"X-MS-Exchange-Inbox-Rules-Loop:.*\n"  # Example: X-MS-Exchange-Inbox-Rules-Loop: <unique_id>
+        # Add more patterns as needed
+    ]
+    
+    for pattern in forward_patterns:
+        if re.search(pattern, headers):
+            return True
+    return False
+
 
 @app.route('/getExtractedData', methods=['GET'])
 def getExtractedData():
@@ -92,8 +141,9 @@ def getExtractedData():
             if folder.content_count:
                 messages = folder.get_contents(0, folder.content_count)
                 for message_info in messages:
+                    
                     mapi = pst.extract_message(message_info)
-                    print(mapi.headers)
+                    
                     arc_seal = mapi.headers.get('ARC-Seal')
                     arc_message_signature = mapi.headers.get('ARC-Message-Signature')
                     x_google_smtp_source = mapi.headers.get('X-Google-Smtp-Source')
@@ -103,6 +153,7 @@ def getExtractedData():
                     received_line = f"Received: {received}\n\n"
                     message_id_line = f"Message-Id: {message_id}\n\n"
                     headers = message_id_line + received_line
+                    
                     if received_spf is not None:
                         sender_email_server = mapi.headers.get(received_spf)
                     else:
@@ -116,15 +167,19 @@ def getExtractedData():
                     sender_ip_address = received.split('[')[-1].split(']')[0] if received else None
                     receiver_ip_address = received.split('from ')[-1].split(' ')[0] if received else None
                     authenticated = True if received_spf else False
-                    
                     proper_delivery = checkForProperEmailDelivery(mapi)
+                    is_reply = isReply(headers)
+                    is_forward = isForward(headers)
+                    
                     message_delivery_data = {
                         'subject': mapi.subject,
                         'proper_delivery': proper_delivery,
-                        'headers': headers
+                        'headers': headers,
+                        'is_reply': is_reply,
+                        'is_forward': is_forward
                     }
                     folderData['message_delivery_data'].append(message_delivery_data)
-
+# Appending Message Data
                     message_data = {
                         'subject': mapi.subject,
                         'sender_name': mapi.sender_name,
@@ -146,9 +201,12 @@ def getExtractedData():
                         'authenticated': authenticated,
                         'arc_seal': arc_seal,
                         'arc_message_signature': arc_message_signature,
-                        'x_google_smtp_source': x_google_smtp_source
+                        'x_google_smtp_source': x_google_smtp_source,
+                        'preview_text': extractMessagePreview(mapi.body_html),
+                        'labels': extractLabelsFromHeaders(headers) + extractLabelsFromBody(mapi.body_html)
                     }
                     folderData['messages'].append(message_data)
+# Appending Contacts                    
                     if mapi.message_class.startswith('IPM.Contact'):
                         contact_data = {
                             'name': mapi.display_name,
@@ -156,6 +214,7 @@ def getExtractedData():
                             'phone': '',  # Add phone number if available
                         }
                         folderData['contacts'].append(contact_data)
+# Appending Attachments                        
                     for attachment in mapi.attachments:
                         if hasattr(attachment, 'name'):
                             attachment_data = {
