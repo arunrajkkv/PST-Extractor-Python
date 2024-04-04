@@ -118,6 +118,29 @@ def isForward(headers):
             return True
     return False
 
+def isEncrypted(headers):
+    # encryption_patterns = [r"Content-Type: multipart/encrypted", r"Content-Transfer-Encoding: base64"]
+    encryption_patterns = [
+        r"Content-Type: application/pkcs7-mime",  # S/MIME encryption
+        r"Content-Type: application/x-pkcs7-mime",  # S/MIME encryption
+        r"Content-Type: application/x-pkcs7-mime; smime-type=enveloped-data",  # S/MIME encryption
+        r"Content-Type: application/octet-stream; name=\".*?\.p7m\"",  # S/MIME encryption
+        r"Content-Type: application/x-msdownload; name=\".*?\.p7m\"",  # S/MIME encryption
+        r"Content-Type: application/pkcs7-signature",  # S/MIME digital signature
+        r"Content-Type: multipart/signed",  # S/MIME digital signature
+        r"Content-Type: multipart/encrypted",  # PGP/MIME encryption
+        r"Content-Type: application/pgp-encrypted",  # PGP/MIME encryption
+        r"Content-Type: application/pgp-signature",  # PGP digital signature
+        r"Content-Type: application/pgp-keys",  # PGP public key
+        r"Content-Transfer-Encoding: base64",  # Base64-encoded content
+        r"X-Encrypted: true",  # Custom header indicating encryption
+        # Add more patterns as needed
+    ]
+    for pattern in encryption_patterns:
+        if re.search(pattern, headers):
+            return True
+    return False
+
 
 @app.route('/getExtractedData', methods=['GET'])
 def getExtractedData():
@@ -138,6 +161,7 @@ def getExtractedData():
                 'message_delivery_data': []
             }
             folder = pst.root_folder.get_sub_folder(folder.display_name)
+            print("folder:", folder.content_count)
             if folder.content_count:
                 messages = folder.get_contents(0, folder.content_count)
                 for message_info in messages:
@@ -170,13 +194,15 @@ def getExtractedData():
                     proper_delivery = checkForProperEmailDelivery(mapi)
                     is_reply = isReply(headers)
                     is_forward = isForward(headers)
+                    is_encrypted = isEncrypted(headers)
                     
                     message_delivery_data = {
                         'subject': mapi.subject,
                         'proper_delivery': proper_delivery,
                         'headers': headers,
                         'is_reply': is_reply,
-                        'is_forward': is_forward
+                        'is_forward': is_forward,
+                        'is_encrypted': is_encrypted
                     }
                     folderData['message_delivery_data'].append(message_delivery_data)
 # Appending Message Data
@@ -203,7 +229,9 @@ def getExtractedData():
                         'arc_message_signature': arc_message_signature,
                         'x_google_smtp_source': x_google_smtp_source,
                         'preview_text': extractMessagePreview(mapi.body_html),
-                        'labels': extractLabelsFromHeaders(headers) + extractLabelsFromBody(mapi.body_html)
+                        'labels': extractLabelsFromHeaders(headers) + extractLabelsFromBody(mapi.body_html),
+                        'encryption_status': is_encrypted,
+                        'message_delivery_data': message_delivery_data
                     }
                     folderData['messages'].append(message_data)
 # Appending Contacts                    
