@@ -1,5 +1,5 @@
 from datetime import datetime
-import re 
+import re
 import flask
 from flask import jsonify
 from flask_cors import CORS
@@ -161,7 +161,6 @@ def getExtractedData():
                 'message_delivery_data': []
             }
             folder = pst.root_folder.get_sub_folder(folder.display_name)
-            print("folder:", folder.content_count)
             if folder.content_count:
                 messages = folder.get_contents(0, folder.content_count)
                 for message_info in messages:
