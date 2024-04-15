@@ -7,6 +7,7 @@ from aspose.email.storage.pst import PersonalStorage
 import struct
 from flask import request
 from bs4 import BeautifulSoup
+import whois
 
 app = flask.Flask(__name__)
 app.config["DEBUG"] = True
@@ -161,7 +162,6 @@ def getExtractedData():
                 'message_delivery_data': []
             }
             folder = pst.root_folder.get_sub_folder(folder.display_name)
-            print("folder:", folder.content_count)
             if folder.content_count:
                 messages = folder.get_contents(0, folder.content_count)
                 for message_info in messages:
@@ -262,6 +262,20 @@ def getExtractedData():
         for folderData in result:
             folderData['header_data'] = headerInfo_serializable
         return jsonify(result)
+    
+@app.route('/whoIs', methods=['GET'])
+def getWhoIsDetails():
+    domain = request.args.get('domain')
+    if domain:
+        try:
+            whoIsInfo = whois.whois(domain)
+            rawWhoIs = whoIsInfo.text
+            parsedWhoIs = whoIsInfo
+            return jsonify({'rawWhoIs': rawWhoIs, 'parsedWhoIs': parsedWhoIs})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({'error': 'Domain parameter is required'}), 400
 
 
 if __name__ == '__main__':
