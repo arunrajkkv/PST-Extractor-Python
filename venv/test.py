@@ -1,13 +1,32 @@
 from datetime import datetime
 import re 
 import flask
-from flask import jsonify
+from flask import jsonify, send_file
 from flask_cors import CORS
 from aspose.email.storage.pst import PersonalStorage
 import struct
-from flask import request
+from flask import request, Flask
 from bs4 import BeautifulSoup
 import whois
+from docx import Document
+import io
+import dns.resolver
+from ipwhois import IPWhois
+import socket
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import simpleSplit
+from reportlab.pdfbase import pdfmetrics
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+import geoip2.database
+import concurrent.futures
+
+dns_cache = {}
+ip_cache = {}
 
 app = flask.Flask(__name__)
 app.config["DEBUG"] = True
@@ -142,7 +161,6 @@ def isEncrypted(headers):
             return True
     return False
 
-
 @app.route('/getExtractedData', methods=['GET'])
 def getExtractedData():
     file_path = request.args.get('file')
@@ -262,6 +280,8 @@ def getExtractedData():
         for folderData in result:
             folderData['header_data'] = headerInfo_serializable
         return jsonify(result)
+
+# ------------------------------------------WHOIS lookup Data-------------------------------------------------------
     
 @app.route('/whoIs', methods=['GET'])
 def getWhoIsDetails():
@@ -276,6 +296,197 @@ def getWhoIsDetails():
             return jsonify({'error': str(e)}), 500
     else:
         return jsonify({'error': 'Domain parameter is required'}), 400
+
+# ------------------------------------------PDF Generation-------------------------------------------------------
+
+def draw_card_header(canvas, doc):
+    canvas.saveState()
+    width, height = letter
+    # Draw the card header rectangle with background color
+    canvas.setFillColorRGB(0.8, 0.8, 0.8)
+    canvas.rect(doc.leftMargin, height - doc.topMargin, doc.width, 0.5 * inch, stroke=0, fill=1)
+
+    # Draw the title text
+    canvas.setFillColorRGB(0, 0, 0)
+    canvas.setFont("Helvetica-Bold", 14)
+    canvas.drawString(doc.leftMargin + 10, height - doc.topMargin + 0.25 * inch - 10, "Report")
+    canvas.restoreState()
+
+def generatePDF(data):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+    elements = []
+
+    # Define styles for the document
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='CardHeader', fontSize=14, leading=14, alignment=1, spaceAfter=20, backColor=colors.lightgrey))
+    styles.add(ParagraphStyle(name='Heading2Custom', parent=styles['Heading1'], fontSize=12))
+    styles.add(ParagraphStyle(name='BodyTextCustom', parent=styles['Normal'], spaceAfter=12))
+
+    # General Information
+    for key, value in data.items():
+        if key in ["Folders List", "Servers Involved"]:
+            continue  # Skip printing these here
+
+        text = f"<b>{key}:</b> {value}"
+        elements.append(Paragraph(text, styles['BodyTextCustom']))
+
+    # Print Folders List table
+    folders_list = data.get("Folders List")
+    if folders_list:
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("<b>Folders List</b>", styles['Heading2Custom']))
+        folders_data = [["Folder Name", "Count"]]
+        for item in folders_list.split(", "):
+            parts = item.rsplit(" ", 1)  # Split by the last space to separate name and count
+            if len(parts) == 2:
+                folders_data.append([parts[0], parts[1]])
+        table = Table(folders_data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(table)
+
+    # Print Servers Involved table
+    servers_list = data.get("Servers Involved")
+    if servers_list:
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("<b>Servers Involved</b>", styles['Heading2Custom']))
+        servers_data = [["Server"]]
+        for i, server in enumerate(servers_list.split(";")):
+            servers_data.append([server.strip()])
+        table = Table(servers_data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(table)
+
+    # Build and save the PDF
+    doc.build(elements, onFirstPage=draw_card_header)
+    buffer.seek(0)
+    return buffer
+
+@app.route('/generate/report', methods=['POST'])
+def generateReport():
+    try:
+        data = request.get_json()
+        pdf_buffer = generatePDF(data)
+        return send_file(pdf_buffer, as_attachment=True, download_name='report.pdf', mimetype='application/pdf')
+    except Exception as e:
+        print("Error:", str(e))  # Log the error message
+        return jsonify({'error': str(e)}), 500
+    
+# ------------------------------------------DNS-------------------------------------------------------
+    
+def fetchDnsRecords(domain, record_type):
+    cache_key = f"{domain}_{record_type}"
+    if cache_key in dns_cache:
+        return dns_cache[cache_key]
+    try:
+        resolver = dns.resolver.Resolver()
+        answers = resolver.resolve(domain, record_type)
+        records = [r.to_text() for r in answers]
+        dns_cache[cache_key] = records
+        return records
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
+        return []
+    except Exception as e:
+        return str(e)
+
+def getIpInfo(ip):
+    if ip in ip_cache:
+        return ip_cache[ip]
+    try:
+        obj = IPWhois(ip)
+        res = obj.lookup_rdap()
+        asn_info = {
+            'asn': res.get('asn'),
+            'asn_cidr': res.get('asn_cidr'),
+            'asn_country_code': res.get('asn_country_code'),
+            'asn_description': res.get('asn_description'),
+            'asn_date': res.get('asn_date'),
+            'network': res.get('network', {}).get('name'),
+            'country': res.get('network', {}).get('country'),
+        }
+
+        # Geolocation information
+        with geoip2.database.Reader('GeoLite2-City.mmdb') as reader:
+            geo_info = reader.city(ip)
+            location_info = {
+                'city': geo_info.city.name,
+                'country': geo_info.country.name,
+                'latitude': geo_info.location.latitude,
+                'longitude': geo_info.location.longitude
+            }
+
+        ip_info = {**asn_info, **location_info}
+        ip_cache[ip] = ip_info
+        return ip_info
+    except Exception as e:
+        return {'error': str(e)}
+
+def getDetailedRecordInfo(records):
+    detailed_records = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_record = {executor.submit(getIpInfo, record): record for record in records}
+        for future in concurrent.futures.as_completed(future_to_record):
+            record = future_to_record[future]
+            try:
+                ip_info = future.result()
+                ip = socket.gethostbyname(record)
+                detailed_records.append({
+                    'record': record,
+                    'ip': ip,
+                    'details': ip_info
+                })
+            except Exception as e:
+                detailed_records.append({
+                    'record': record,
+                    'error': str(e)
+                })
+    return detailed_records
+
+@app.route('/nslookup', methods=['GET'])
+def getNsLookupDetails():
+    domain = request.args.get('domain')
+    if domain:
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_dns = {
+                    'A': executor.submit(fetchDnsRecords, domain, 'A'),
+                    'AAAA': executor.submit(fetchDnsRecords, domain, 'AAAA'),
+                    'CNAME': executor.submit(fetchDnsRecords, domain, 'CNAME'),
+                    'TXT': executor.submit(fetchDnsRecords, domain, 'TXT'),
+                    'SPF': executor.submit(fetchDnsRecords, domain, 'SPF'),
+                    'NS': executor.submit(fetchDnsRecords, domain, 'NS'),
+                    'MX': executor.submit(fetchDnsRecords, domain, 'MX')
+                }
+                dns_data = {}
+                for record_type, future in future_dns.items():
+                    records = future.result()
+                    if record_type in ['A', 'AAAA', 'MX']:
+                        dns_data[record_type] = getDetailedRecordInfo(records)
+                    else:
+                        dns_data[record_type] = records
+
+            return jsonify(dns_data)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({'error': 'Domain parameter is required'}), 400
+
 
 
 if __name__ == '__main__':
