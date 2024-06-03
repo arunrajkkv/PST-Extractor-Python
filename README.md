@@ -7,4 +7,8 @@
 7. pip install -U flask-cors
 8. pip install Aspose.Email-for-Python-via-NET
 9. pip install BeautifulSoup4
-10. After you run the code, the server will start in port 5000
+10. pip install reportlab python-docx
+11. pip install dnspython
+12. pip install ipwhois
+13. pip install ipwhois geoip2
+14. After you run the code, the server will start in port 5000
