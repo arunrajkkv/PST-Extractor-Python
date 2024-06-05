@@ -22,8 +22,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase import pdfmetrics
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus.tables import LongTable
 import geoip2.database
 import concurrent.futures
+from reportlab.lib.colors import Color
 
 dns_cache = {}
 ip_cache = {}
@@ -302,78 +304,188 @@ def getWhoIsDetails():
 def draw_card_header(canvas, doc):
     canvas.saveState()
     width, height = letter
-    # Draw the card header rectangle with background color
     canvas.setFillColorRGB(0.8, 0.8, 0.8)
     canvas.rect(doc.leftMargin, height - doc.topMargin, doc.width, 0.5 * inch, stroke=0, fill=1)
-
-    # Draw the title text
     canvas.setFillColorRGB(0, 0, 0)
     canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(doc.leftMargin + 10, height - doc.topMargin + 0.25 * inch - 10, "Report")
+    canvas.drawCentredString(width / 2.0, height - doc.topMargin + 0.3 * inch - 10, "Email Header Analysis Report")
     canvas.restoreState()
+
+def chunk_data(data, chunk_size):
+    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+def pad_chunk(chunk, size):
+    return chunk + [["", ""]] * (size - len(chunk))
+
+def create_wrapped_paragraph(text, style):
+    return Paragraph(text, style)
 
 def generatePDF(data):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
     elements = []
 
-    # Define styles for the document
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name='CardHeader', fontSize=14, leading=14, alignment=1, spaceAfter=20, backColor=colors.lightgrey))
-    styles.add(ParagraphStyle(name='Heading2Custom', parent=styles['Heading1'], fontSize=12))
-    styles.add(ParagraphStyle(name='BodyTextCustom', parent=styles['Normal'], spaceAfter=12))
+    styles.add(ParagraphStyle(name='Heading2Custom', parent=styles['Heading1'], fontSize=14))
+    styles.add(ParagraphStyle(name='BodyTextCustom', parent=styles['Normal'], fontSize=12, spaceAfter=12, wordWrap='CJK'))
 
-    # General Information
-    for key, value in data.items():
-        if key in ["Folders List", "Servers Involved"]:
-            continue  # Skip printing these here
-
-        text = f"<b>{key}:</b> {value}"
-        elements.append(Paragraph(text, styles['BodyTextCustom']))
-
-    # Print Folders List table
-    folders_list = data.get("Folders List")
-    if folders_list:
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("<b>Folders List</b>", styles['Heading2Custom']))
-        folders_data = [["Folder Name", "Count"]]
-        for item in folders_list.split(", "):
-            parts = item.rsplit(" ", 1)  # Split by the last space to separate name and count
-            if len(parts) == 2:
-                folders_data.append([parts[0], parts[1]])
-        table = Table(folders_data)
+    def create_table_with_header(header, data):
+        table_data = [[header, ""]] + [["", ""]] + data
+        wrapped_data = [[create_wrapped_paragraph(str(cell), styles['BodyTextCustom']) for cell in row] for row in table_data]
+        table = Table(wrapped_data, colWidths=[doc.width / 2.0, doc.width / 2.0])
         table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightskyblue),  # Blue background for header
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),  # White text color for header
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Center alignment for all cells
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Bold font for header
+            ('FONTSIZE', (0, 0), (-1, 0), 16),  # Font size for header
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),  # Padding for header
+            ('TEXTCOLOR', (0, 1), (-1, 1), colors.white),  # Ensure the second row is white text
+            ('BACKGROUND', (0, 2), (-1, -1), colors.white),  # White background for all other rows
+            ('GRID', (0, 1), (-1, -1), 1, colors.black),  # Grid with black lines
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),  # Left padding for all cells
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),  # Right padding for all cells
+            # ('TOPPADDING', (0, 0), (-1, -1), 12),  # Top padding for all cells
+            # ('BOTTOMPADDING', (0, 0), (-1, -1), 12),  # Bottom padding for all cells
+            # ('VALIGN', (0, 0), (-1, -1), 'TOP')  # Vertical alignment for all cells
         ]))
-        elements.append(table)
+        return table
+    
+    def create_one_column_table_with_header(header, data, colWidths=None):
+        table_data = [[header]] + [[""]] + data
+        wrapped_data = [[create_wrapped_paragraph(str(cell), styles['BodyTextCustom']) for cell in row] for row in table_data]
+        table = Table(wrapped_data, colWidths=colWidths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightskyblue),  # Blue background for header
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),  # White text color for header
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Center alignment for all cells
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Bold font for header
+            ('FONTSIZE', (0, 0), (-1, 0), 16),  # Font size for header
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),  # Padding for header
+            ('TEXTCOLOR', (0, 1), (-1, 1), colors.white),  # Ensure the second row is white text
+            ('BACKGROUND', (0, 2), (-1, -1), colors.white),  # White background for all other rows
+            ('GRID', (0, 1), (-1, -1), 1, colors.black),  # Grid with black lines
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),  # Left padding for all cells
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),  # Right padding for all cells
+            # ('TOPPADDING', (0, 0), (-1, -1), 12),  # Top padding for all cells
+            # ('BOTTOMPADDING', (0, 0), (-1, -1), 12),  # Bottom padding for all cells
+            # ('VALIGN', (0, 0), (-1, -1), 'TOP')  # Vertical alignment for all cells
+        ]))
+        return table
 
-    # Print Servers Involved table
+    
+    # Folders List
+    folders_list = data.get("Folder List Information")
+    if folders_list:
+        folders_data = []
+        for item in folders_list.split(", "):
+            parts = item.rsplit(":", 1)
+            if len(parts) == 2:
+                folders_data.append([parts[0].strip(), parts[1].strip()])
+        elements.append(create_table_with_header("Folders List", folders_data))
+        elements.append(Spacer(1, 12))
+        
+    # Email Header Information
+    email_header_info = [
+        ["Subject", data.get("Subject", "")],
+        ["Client Submit Time", data.get("Client Submit Time", "")],
+        ["Delivery Time", data.get("Delivery Time", "")]
+    ]
+    elements.append(create_table_with_header("Email Header Information", email_header_info))
+    elements.append(Spacer(1, 12))
+
+    # Sender Information
+    sender_info = [
+        ["Sender Name", data.get("Sender Name", "")],
+        ["Sender Address Type", data.get("Sender Address Type", "")],
+        ["Sender Email", data.get("Sender Email", "")],
+        ["Sender SMTP Address", data.get("Sender SMTP Address", "")],
+        ["Sender Domain", data.get("Sender Domain", "")],
+        ["Sender IP Address", data.get("Sender Ip Address", "")]
+    ]
+    elements.append(create_table_with_header("Sender Information", sender_info))
+    elements.append(Spacer(1, 12))
+
+    # Receiver Information
+    receiver_info = [
+        ["Receiver Server", data.get("Receiver Server", "")],
+        ["Receiver Domain", data.get("Receiver Domain", "")],
+        ["Receiver IP Address", data.get("Receiver Ip Address", "")],
+        ["To", data.get("To", "")],
+        ["Cc", data.get("Cc", "")],
+        ["Bcc", data.get("Bcc", "")]
+    ]
+    elements.append(create_table_with_header("Receiver Information", receiver_info))
+    elements.append(Spacer(1, 12))
+
+    # WHOIS Lookup Information
+    whoIsLookupData = [
+        ["Domain Name", data.get("Domain Name", "")],
+        ["Registrar", data.get("Registrar", "")],
+        ["Registrar URL", data.get("Registrar URL", "")],
+        ["Registered On", data.get("Registered On", "")],
+        ["Expires On", data.get("Expires On", "")],
+        ["Updated On", data.get("Updated On", "")],
+        ["Status", data.get("Status", "")],
+        ["Registrant Organization", data.get("Registrant Organization", "")],
+        ["Registrant State", data.get("Registrant State", "")],
+        ["Registrant Country", data.get("Registrant Country", "")]
+    ]
+    elements.append(create_table_with_header("WHOIS Lookup Information", whoIsLookupData))
+    elements.append(Spacer(1, 12))
+    
+    # DNS Lookup Information
+    dnsLookupData = [
+        ["IPv4 Address", data.get("IPv4 Address", "")],
+        ["IPv6 Address", data.get("IPv4 Address", "")]
+    ]
+    elements.append(create_table_with_header("DNS Lookup Information", dnsLookupData))
+    elements.append(Spacer(1, 12))
+    
+    # SPF Records
+    verificationRecords = data.get("Verification Records", "").split(',')
+    ver_data = [[record.strip()] for record in verificationRecords]
+    elements.append(create_one_column_table_with_header("Verification Record Information", ver_data, colWidths=[doc.width]))
+    elements.append(Spacer(1, 12))
+    
+  
+    # SPF Records
+    spf_records = data.get("SPF Records", "").split(',')
+    spf_data = [[record.strip()] for record in spf_records]
+    elements.append(create_one_column_table_with_header("IPs Information", spf_data, colWidths=[doc.width]))
+    elements.append(Spacer(1, 12))
+    
+    # NS Records
+    nsRecord = data.get("NS Records", "").split(',')
+    nsData = [[record.strip()] for record in nsRecord]
+    elements.append(create_one_column_table_with_header("NS Record Information", nsData, colWidths=[doc.width]))
+    elements.append(Spacer(1, 12))
+    
+    # MX Records
+    mxRecords = data.get("MX Records", "").split(',')
+    mxData = [[record.strip()] for record in mxRecords]
+    elements.append(create_one_column_table_with_header("MX Record Information", mxData, colWidths=[doc.width]))
+    elements.append(Spacer(1, 12))
+
+    # Message Metadata
+    message_metadata = [
+        ["Signature", data.get("Signature", "")],
+        ["File Format", data.get("File Format", "")],
+        ["Version", data.get("Version", "")],
+        ["ESMTP ID", data.get("ESMTP ID", "")],
+        ["Encryption Status", data.get("Encryption Status", "")]
+    ]
+    elements.append(create_table_with_header("Message Metadata Information", message_metadata))
+    elements.append(Spacer(1, 12))
+
+    # Servers Involved
     servers_list = data.get("Servers Involved")
     if servers_list:
+        servers_data = [server.strip().split(', ') for server in servers_list.split(';')]
+        elements.append(create_table_with_header("Involved Servers Information", servers_data))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph("<b>Servers Involved</b>", styles['Heading2Custom']))
-        servers_data = [["Server"]]
-        for i, server in enumerate(servers_list.split(";")):
-            servers_data.append([server.strip()])
-        table = Table(servers_data)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ]))
-        elements.append(table)
 
-    # Build and save the PDF
     doc.build(elements, onFirstPage=draw_card_header)
     buffer.seek(0)
     return buffer
